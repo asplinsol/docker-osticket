@@ -34,7 +34,12 @@ $vars = array(
   'cron_interval'   => getenv("CRON_INTERVAL")        ?: 5,
 
   'siri'     => getenv("INSTALL_SECRET"),
-  'config'   => getenv("INSTALL_CONFIG") ?: '/data/upload/include/ost-sampleconfig.php'
+  'config'   => getenv("INSTALL_CONFIG") ?: '/data/upload/include/ost-sampleconfig.php',
+  
+  //ENABLE SSL (port 443) and lets encrypt integration
+  'ssl_domain'     => getenv("SSL_DOMAIN"),
+  'web_listenport'       => getenv("LISTEN_PORT") ?: 80,
+  'http_redirect'     => getenv("HTTPREDIRECT")
 );
 
 //Script settings
@@ -206,6 +211,62 @@ if (!$db_installed) {
   } else {
     echo "Database installation successful\n";
   }
+}
+
+//update nginx conf include ssl if SSL domain supplied
+define('NGINX_CONFIG_FILE','/etc/nginx/nginx.conf');
+if (!$nginxFile = file_get_contents(NGINX_CONFIG_FILE)) {
+    err("Failed to load nginx configuration file: '/etc/nginx/nginx.conf'");
+};
+if($vars['ssl_domain'] && !file_exists("/etc/letsencrypt/live/{$vars['ssl_domain']}/fullchain.pem")) {
+  echo("Certificate not found at /etc/letsencrypt/live/{$vars['ssl_domain']}/fullchain.pem - reverting to http mode\n");
+  $vars['ssl_domain'] =false;
+  $vars['web_listenport'] = 80;
+}
+if($vars['ssl_domain'] && !file_exists("/etc/letsencrypt/live/{$vars['ssl_domain']}/privkey.pem")) {
+  echo("Certificate Key not found at /etc/letsencrypt/live/{$vars['ssl_domain']}/privkey.pem - reverting to http mode\n");
+  $vars['ssl_domain'] =false;
+  $vars['web_listenport'] = 80;
+}
+if ($vars['ssl_domain']) {
+  $nginxFile= str_replace('%HOSTNAME%',$vars['ssl_domain'],$nginxFile);
+  if (!$vars['web_listenport']) $vars['web_listenport'] = '443 ssl http2';
+  $sslconfig = <<< EOT
+  ssl_certificate /etc/letsencrypt/live/{$vars['ssl_domain']}/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/{$vars['ssl_domain']}/privkey.pem;
+
+  # Turn on OCSP stapling as recommended at 
+  # https://community.letsencrypt.org/t/integration-guide/13123 
+  # requires nginx version >= 1.3.7
+  ssl_stapling on;
+  ssl_stapling_verify on;
+EOT;
+$nginxFile= str_replace('%HOSTNAME%','localhost',$nginxFile);
+
+} else {
+  $nginxFile= str_replace('%HOSTNAME%','localhost',$nginxFile);
+  $sslconfig = '';
+}
+
+if ($vars['ssl_domain'] && $vars['http_redirect']) {
+  $http_redirect = <<< 'EOT'
+  server {
+    listen 80;
+    server_name sub.domain.com www.sub.domain.com;
+    rewrite     ^   https://$host$request_uri? permanent;
+  }
+EOT;
+} else {
+  $http_redirect = '';
+}
+
+$nginxFile= str_replace('%INCHTTPSREDIRECT%',$http_redirect,$nginxFile);
+$nginxFile= str_replace('%SSL_CONFIG%',$sslconfig,$nginxFile);
+$nginxFile= str_replace('%LISTENPORT%',$vars['web_listenport'],$nginxFile);
+
+  
+if (!file_put_contents(NGINX_CONFIG_FILE, $nginxFile)) {
+  err("Failed to write mail configuration file");
 }
 
 ?>
